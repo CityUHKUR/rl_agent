@@ -354,7 +354,8 @@ if __name__ == "__main__":
 
     checkpoint = tf.train.Checkpoint(step=tf.Variable(1),optimizer=train_opt, model=agent)
     manager = tf.train.CheckpointManager(checkpoint, directory="./ckpt/model", max_to_keep=5)
-
+    # restore saved model if available
+    checkpoint.restore(manager.latest_checkpoint)
     print("[INFO] START TRAINING")
     epoch = 1
     allRewards=[]
