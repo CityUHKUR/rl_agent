@@ -311,7 +311,7 @@ if __name__ == "__main__":
     learning_rate = 0.001
     num_epochs = 500 # Total epochs for training 
 
-    batch_size = 10 # Each 1 is AN EPISODE # YOU CAN CHANGE TO 50 if you have GPU
+    batch_size = 5 # Each 1 is AN EPISODE # YOU CAN CHANGE TO 50 if you have GPU
     gamma = 0.9 # Discounting rate
 
     ### MODIFY THIS TO FALSE IF YOU JUST WANT TO SEE THE TRAINED AGENT
