@@ -65,7 +65,11 @@ python3 simulation_ws/sagemake_rl_agent/markov/local_machine_training.py
 ```
 
 #### Seeing your robot learn
-
+```bash
+source /opt/ros/kinetic/local_setup.bash
+rqt
+```
+then select "Plugin" -> "Visualiztion" -> "Image View"
 
 ### Evaluating the model
 
@@ -107,7 +111,7 @@ pip3 install colcon-ros-bundle tensorflow gym numpy skimage --user
 
 After colcon is installed you need to build your robot or simulation, then you can bundle with:
 
-```bash
+```bash 
 # Bundling Simulation Application
 cd simulation_ws
 colcon build
