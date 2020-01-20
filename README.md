@@ -102,7 +102,7 @@ TensorFlow 2 packages require a pip version >19.0.
 apt-get update
 apt-get install -y python3-pip python3-apt
 pip3 install -U pip --user
-pip3 install colcon-ros-bundle tensorflow gym numpy --user
+pip3 install colcon-ros-bundle tensorflow gym numpy skimage --user
 ```
 
 After colcon is installed you need to build your robot or simulation, then you can bundle with:
