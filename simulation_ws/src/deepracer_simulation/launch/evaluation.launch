@@ -3,9 +3,6 @@
     <arg name="gui" default="false" />
 
     <param name="WORLD_NAME" value="$(env WORLD_NAME)" />
-    <param name="MODEL_S3_BUCKET" value="$(env MODEL_S3_BUCKET)" />
-    <param name="MODEL_S3_PREFIX" value="$(env MODEL_S3_PREFIX)" />
-    <param name="ROS_AWS_REGION" value="$(env ROS_AWS_REGION)" />
     <param name="JOB_TYPE" value="EVALUATION" />
 
     <include file="$(find deepracer_simulation)/launch/racetrack_with_racecar.launch">

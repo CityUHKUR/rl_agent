@@ -84,7 +84,7 @@ class DeepRacerEnv(gym.Env):
             rospy.Subscriber('/camera/zed/rgb/image_rect_color', sensor_image, self.callback_image)
             self.world_name = rospy.get_param('WORLD_NAME')
             self.set_waypoints()
-            self.aws_region = rospy.get_param('ROS_AWS_REGION')
+
 
         self.reward_in_episode = 0
         self.prev_progress = 0
@@ -95,7 +95,7 @@ class DeepRacerEnv(gym.Env):
             return self.observation_space.sample()
         print('Total Reward Reward=%.2f' % self.reward_in_episode,
               'Total Steps=%.2f' % self.steps)
-        self.send_reward_to_cloudwatch(self.reward_in_episode)
+
 
         self.reward_in_episode = 0
         self.reward = None
@@ -238,19 +238,6 @@ class DeepRacerEnv(gym.Env):
         self.done = done
         self.next_state = state
 
-    def send_reward_to_cloudwatch(self, reward):
-        session = boto3.session.Session()
-        cloudwatch_client = session.client('cloudwatch', region_name=self.aws_region)
-        cloudwatch_client.put_metric_data(
-            MetricData=[
-                {
-                    'MetricName': 'DeepRacerRewardPerEpisode',
-                    'Unit': 'None',
-                    'Value': reward
-                },
-            ],
-            Namespace='AWSRoboMakerSimulation'
-        )
 
     def set_waypoints(self):
         if self.world_name.startswith(MEDIUM_TRACK_WORLD):
