@@ -12,7 +12,8 @@ Keywords: Reinforcement learning, AWS, RoboMaker
 
 ![deepracer-hard-track-world.jpg](docs/images/deepracer-hard-track-world.jpg)
 
-## Requirements -IMPORTANT
+## Requirements
+### IMPORTANT
 
 - ROS Kinetic / Melodic (optional) - To run the simulation locally. Other distributions of ROS may work, however they have not been tested
 - Gazebo (optional) - To run the simulation locally
@@ -96,11 +97,12 @@ aimlessly.
 ## Using this sample with AWS RoboMaker
 
 You first need to install colcon. Python 3.5 or above is required.
-
+TensorFlow 2 packages require a pip version >19.0.
 ```bash
 apt-get update
 apt-get install -y python3-pip python3-apt
-pip3 install colcon-ros-bundle
+pip3 install -U pip --user
+pip3 install colcon-ros-bundle tensorflow gym numpy --user
 ```
 
 After colcon is installed you need to build your robot or simulation, then you can bundle with:
