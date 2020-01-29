@@ -3,7 +3,6 @@ from __future__ import print_function
 import time
 
 # only needed for fake driver setup
-import boto3
 # gym
 import gym
 import numpy as np
@@ -14,7 +13,6 @@ import math
 
 # Type of worker
 SIMULATION_WORKER = "SIMULATION_WORKER"
-SAGEMAKER_TRAINING_WORKER = "SAGEMAKER_TRAINING_WORKER"
 
 node_type = os.environ.get("NODE_TYPE", SIMULATION_WORKER)
 
@@ -91,8 +89,6 @@ class DeepRacerEnv(gym.Env):
         self.steps = 0
 
     def reset(self):
-        if node_type == SAGEMAKER_TRAINING_WORKER:
-            return self.observation_space.sample()
         print('Total Reward Reward=%.2f' % self.reward_in_episode,
               'Total Steps=%.2f' % self.steps)
 
@@ -146,8 +142,6 @@ class DeepRacerEnv(gym.Env):
         self.progress_at_beginning_of_race = self.progress
 
     def step(self, action):
-        if node_type == SAGEMAKER_TRAINING_WORKER:
-            return self.observation_space.sample(), 0, False, {}
 
         # initialize rewards, next_state, done
         self.reward = None
@@ -206,7 +200,6 @@ class DeepRacerEnv(gym.Env):
         # Wait till we have a image from the camera
         while not self.image:
             time.sleep(SLEEP_WAITING_FOR_IMAGE_TIME_IN_SECOND)
-
         # Car environment spits out BGR images by default. Converting to the
         # image to RGB.
         image = Image.frombytes('RGB', (self.image.width, self.image.height),
