@@ -32,7 +32,7 @@ FINISH_LINE = 100
 CRASHED = 0
 NO_PROGRESS = -1
 FINISHED = 100000.0
-MAX_STEPS = 2000
+MAX_STEPS = 400
 
 # WORLD NAME
 EASY_TRACK_WORLD = 'easy_track'
@@ -66,7 +66,7 @@ class DeepRacerEnv(gym.Env):
         # actions -> steering angle, throttle
         self.action_space = spaces.Box(low=np.array([-1, 0]), high=np.array([+1, +1]), dtype=np.float32)
 
-        # given image from simulator
+        # given input_image from simulator
         self.observation_space = spaces.Box(low=0, high=255,
                                             shape=(screen_height, screen_width, 3), dtype=np.uint8)
 
@@ -188,23 +188,28 @@ class DeepRacerEnv(gym.Env):
             rewards += 0.3
         elif distance_from_center >= 0.03 and distance_from_center <= 0.05:
             rewards += 0.1
+        elif distance_from_center >= 0.05 and distance_from_center <= 0.1:
+            rewards += 0.05
+        else:
+            rewards += 0.01
 
-        if steering >= 15.0 :
+        if steering >= 1.0 :
             rewards *= 0.5
-        # rewards += progress/100.0
+
+        # rewards *= progress/10.0
         
 
         return rewards  # like crashed
 
     def infer_reward_state(self, steering_angle, throttle):
-        # Wait till we have a image from the camera
+        # Wait till we have a input_image from the camera
         while not self.image:
             time.sleep(SLEEP_WAITING_FOR_IMAGE_TIME_IN_SECOND)
         # Car environment spits out BGR images by default. Converting to the
-        # image to RGB.
+        # input_image to RGB.
         image = Image.frombytes('RGB', (self.image.width, self.image.height),
                                 self.image.data, 'raw', 'BGR', 0, 1)
-        # resize image ans perform anti-aliasing
+        # resize input_image ans perform anti-aliasing
         image = image.resize(TRAINING_IMAGE_SIZE, resample=2).convert("RGB")
         state = np.array(image)
 
@@ -225,6 +230,9 @@ class DeepRacerEnv(gym.Env):
             else:
                 reward = FINISHED / self.steps
                 done = True
+        elif self.steps > MAX_STEPS :
+            reward = 0
+            done = True
         else:
             reward = self.reward_function(on_track, self.x, self.y, self.distance_from_center, self.yaw,
                                           total_progress, self.steps, throttle, steering_angle, self.road_width,

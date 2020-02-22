@@ -58,7 +58,7 @@ class TurtleBot3ObjectTrackerAndFollowerEnv(gym.Env):
         # actions -> steering angle, throttle
         self.action_space = spaces.Box(low=np.array([-1, 0]), high=np.array([+1, +1]), dtype=np.float32)
 
-        # given image from simulator
+        # given input_image from simulator
         self.observation_space = spaces.Box(low=0, high=255,
                                             shape=(screen_height, screen_width, 3), dtype=np.uint8)
 
@@ -174,7 +174,7 @@ class TurtleBot3ObjectTrackerAndFollowerEnv(gym.Env):
         self.ack_publisher.publish(speed)
 
     def infer_reward_state(self):
-        #Wait till we have a image from the camera
+        #Wait till we have a input_image from the camera
         while not self.image:
             time.sleep(SLEEP_WAITING_FOR_IMAGE_TIME_IN_SECOND)
 
