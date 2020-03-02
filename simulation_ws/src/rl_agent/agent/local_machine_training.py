@@ -1,105 +1,100 @@
 # Import simulation Env
 
+from collections import deque  # Ordered collection with ends
+from datetime import datetime  # Help us logging time
+import environments
 import gym
+from gym.envs.registration import register
 
+import numpy as np  # Handle matrices
 # Import training required packags
 import tensorflow as tf  # Deep Learning library
-from tensorflow.keras import layers, initializers
-import numpy as np  # Handle matrices
-
-from rocket.ignite.layers import downsample3D, upsample3D
-from rocket.ignite.loss import cross_entropy_loss
+from rocket import ignite, images
+from drivers import IntrinsicReward,FeatureExtract
+from rocket.ignite.layers import downsample3D
 from rocket.ignite.models import FPN3D
-from rocket.image.preprocess import stack_frames
 from rocket.ignite.types import Transition
-
-from datetime import datetime  # Help us logging time
-
-from collections import deque  # Ordered collection with ends
-
+from rocket.images.preprocess import stack_frames
 from rocket.utils.exprience import ExperienceBuffer
 
-tf.keras.backend.set_floatx('float64')
+tf.keras.backend.set_floatx('float32')
+
+# # Define Out Driver Forward Value Network
+# class DriveDQN(tf.keras.Model):
+#     """
+#         1. Feature Extract Layers
+#         2. Dense Connected Value Network
+#         3. Action Values
+#         4. Softmaxed Policy Gradient
+#     """
+#
+#     def __init__(self, state_size, action_size, learning_rate, feature_extract, name='DriveDQN'):
+#         super(DriveDQN, self).__init__()
+#         self.state_size = state_size
+#         self.action_size = action_size
+#         self.learning_rate = learning_rate
+#
+#         self.inputs = tf.keras.layers.Input(shape=(4, 256, 256, 3))
+#         self.fe = feature_extract
+#         self.model = tf.keras.Sequential()
+#         self.model.add(self.fe)
+#
+#         ## --> [512]
+#         self.fc1 = layers.Dense(
+#                 units=512,
+#                 activation=tf.nn.elu,
+#                 kernel_initializer=initializers.GlorotUniform)(self.model(self.inputs))
+#         self.advs = []
+#         for i in range(action_size):
+#             self.advs.append(layers.Dense(
+#                     kernel_initializer=initializers.GlorotUniform,
+#                     units=512,  # unwrap tuple
+#                     activation=None)(self.fc1))
+#         self.fc2 = layers.Dense(
+#                 units=512,
+#                 activation=tf.nn.elu,
+#                 kernel_initializer=initializers.GlorotUniform)(self.model(self.inputs))
+#
+#         self.value = layers.Dense(
+#                 kernel_initializer=initializers.GlorotUniform,
+#                 units=512,  # unwrap tuple
+#                 activation=None)(self.fc2)
+#         self.aggeregate = layers.Concatenate()(
+#                 [layers.Dense(
+#                         units=128,
+#                         activation=tf.nn.elu,
+#                         kernel_initializer=initializers.GlorotUniform)(
+#                         layers.multiply([self.value, adv]))
+#                         for adv in self.advs])
+#         self.logits = layers.Dense(kernel_initializer=initializers.GlorotUniform,
+#                                    units=action_size,  # unwrap tuple
+#                                    activation=None)(self.aggeregate)
+#         self.model = tf.keras.Model(inputs=self.inputs, outputs=self.logits)
+#
+#     def call(self, state, training=False):
+#         return tf.nn.softmax(self.model(state, training=training)).numpy()
 
 
-
-
-# Define Out Driver Forward Value Network
-class DriveDQN(tf.keras.Model):
-    """
-        1. Feature Extract Layers
-        2. Dense Connected Value Network
-        3. Action Values
-        4. Softmaxed Policy Gradient
-    """
-
-    def __init__(self, state_size, action_size, learning_rate, feature_extract, name='DriveDQN'):
-        super(DriveDQN, self).__init__()
-        self.state_size = state_size
-        self.action_size = action_size
-        self.learning_rate = learning_rate
-
-        self.inputs = tf.keras.layers.Input(shape=(4, 256, 256, 3))
-        self.fe = feature_extract
-        self.model = tf.keras.Sequential()
-        self.model.add(self.fe)
-
-        ## --> [512]
-        self.fc1 = layers.Dense(
-                units=512,
-                activation=tf.nn.elu,
-                kernel_initializer=initializers.GlorotUniform)(self.model(self.inputs))
-        self.advs = []
-        for i in range(action_size):
-            self.advs.append(layers.Dense(
-                    kernel_initializer=initializers.GlorotUniform,
-                    units=512,  # unwrap tuple
-                    activation=None)(self.fc1))
-        self.fc2 = layers.Dense(
-                units=512,
-                activation=tf.nn.elu,
-                kernel_initializer=initializers.GlorotUniform)(self.model(self.inputs))
-
-        self.value = layers.Dense(
-                kernel_initializer=initializers.GlorotUniform,
-                units=512,  # unwrap tuple
-                activation=None)(self.fc2)
-        self.aggeregate = layers.Concatenate()(
-                [layers.Dense(
-                        units=128,
-                        activation=tf.nn.elu,
-                        kernel_initializer=initializers.GlorotUniform)(
-                        layers.multiply([self.value, adv]))
-                        for adv in self.advs])
-        self.logits = layers.Dense(kernel_initializer=initializers.GlorotUniform,
-                                   units=action_size,  # unwrap tuple
-                                   activation=None)(self.aggeregate)
-        self.model = tf.keras.Model(inputs=self.inputs, outputs=self.logits)
-
-    def call(self, state, training=False):
-        return tf.nn.softmax(self.model(state, training=training)).numpy()
-
-
-class TargetDQN(tf.keras.Model):
-    """
-        1. Feature Extract Layers
-        2. Dense Connected Value Network
-        3. Action Values
-        4. Softmaxed Policy Gradient
-    """
-
-    def __init__(self, state_size, action_size, learning_rate, feature_extract, name='TargetDQN'):
-        super(TargetDQN, self).__init__()
-        self.state_size = state_size
-        self.action_size = action_size
-        self.learning_rate = learning_rate
-        self.fe = feature_extract
-
-        self.model = tf.keras.Sequential()
-        self.fc1 = layers.Dense(
-                units=512,
-                activation=tf.nn.elu,
-                kernel_initializer=initializers.GlorotUniform)
+# class TargetDQN(tf.keras.Model):
+#     """
+#         1. Feature Extract Layers
+#         2. Dense Connected Value Network
+#         3. Action Values
+#         4. Softmaxed Policy Gradient
+#     """
+#
+#     def __init__(self, state_size, action_size, learning_rate, feature_extract, name='TargetDQN'):
+#         super(TargetDQN, self).__init__()
+#         self.state_size = state_size
+#         self.action_size = action_size
+#         self.learning_rate = learning_rate
+#         self.fe = feature_extract
+#
+#         self.model = tf.keras.Sequential()
+#         self.fc1 = layers.Dense(
+#                 units=512,
+#                 activation=tf.nn.elu,
+#                 kernel_initializer=initializers.GlorotUniform)
 
 
 def discount_and_normalize_rewards(episode_rewards, gamma):
@@ -116,8 +111,8 @@ def discount_and_normalize_rewards(episode_rewards, gamma):
     return discounted_episode_rewards
 
 
-def make_batch(env, model, train_opt, episodes, batch_size, memory, stacked_frames, stack_size, training,
-               possible_actions, gamma, state_size, explore_rate):
+def make_batch(env, model, opt, episodes, batch_size, memory, stacked_frames, stack_size, training,
+               possible_actions, state_size, explore_rate):
     # Initialize lists: states, actions, rewards_of_episode, rewards_of_batch, discounted_rewards
     # states, actions, rewards_of_episode, rewards_of_batch, discounted_rewards = [], [], [], [], []
 
@@ -131,7 +126,7 @@ def make_batch(env, model, train_opt, episodes, batch_size, memory, stacked_fram
     state = env.reset()
 
     # Get a new state
-    state, stacked_frames = stack_frames(stacked_frames, state, True, stack_size)
+    state, stacked_frames = stack_frames(stacked_frames, state, True, stack_size=stack_size)
 
     while True:
         # Run State Through Policy & Calculate Action
@@ -143,15 +138,14 @@ def make_batch(env, model, train_opt, episodes, batch_size, memory, stacked_fram
         if np.random.rand() <= explore_rate:
             action = np.random.choice(possible_actions)
         else:
-            action = np.random.choice(range(action_probability_distribution.shape[1]),
+            action = np.random.choice(possible_actions,
                                       p=action_probability_distribution.ravel())  # select action w.r.t the actions prob
         action = possible_actions[action]
-        action_one_hot = np.zeros(len(possible_actions))
-        action_one_hot[action] = 1
+        action_one_hot = tf.one_hot(action, len(possible_actions)).numpy()
         # Perform action
         next_state, reward, done, info = env.step(action)
-        state, stacked_frames = stack_frames(stacked_frames, next_state, False)
-        memory.store(Transition(state, np.transpose(action_one_hot), reward, next_state), reward)
+        next_state, stacked_frames = stack_frames(stacked_frames, next_state, False, stack_size=stack_size)
+        memory.store(Transition(state, action_one_hot, reward, next_state), reward)
 
         # # Store results
         # states.append(state)
@@ -160,8 +154,8 @@ def make_batch(env, model, train_opt, episodes, batch_size, memory, stacked_fram
 
         if done:
             # The episode ends so no next state
-            next_state = np.zeros((160, 120, 3), dtype=np.int)
-            next_state, stacked_frames = stack_frames(stacked_frames, next_state, False, stack_size)
+            # next_state = np.zeros((256, 256, 3), dtype=np.int)
+            # next_state, stacked_frames = stack_frames(stacked_frames, next_state, False, stack_size=stack_size)
 
             # Append the rewards_of_batch to reward_of_episode
             # rewards_of_batch.append(rewards_of_episode)
@@ -186,13 +180,16 @@ def make_batch(env, model, train_opt, episodes, batch_size, memory, stacked_fram
             state = env.reset()
 
             # Stack the frames
-            state, stacked_frames = stack_frames(stacked_frames, state, True, stack_size)
-
+            state, stacked_frames = stack_frames(stacked_frames, state, True, stack_size=stack_size)
 
         else:
             # If not done, the next_state become the current state
             # run_steps += 1
-            pass
+
+            print(np.shape(next_state))
+            model.forward.minimize(inputs=[state.reshape(1, *state_size), action_one_hot.reshape(1, *np.shape(action_one_hot)), reward, next_state.reshape(1, *state_size)], optimizer=opt)
+            model.inverse.minimize(inputs=[state.reshape(1, *state_size), action_one_hot.reshape(1, *np.shape(action_one_hot)), reward, next_state.reshape(1, *state_size)], optimizer=opt)
+            state = next_state
 
     return episode_num
 
@@ -217,7 +214,7 @@ def samples(memory, batch_size, randomness):
     rewards_mb = batch.reward
     next_states_mb = batch.next_state
 
-    return np.stack(states_mb), np.stack(actions_mb), rewards_mb, np.stack(next_states_mb)
+    return np.stack(states_mb), np.stack(actions_mb), np.stack(rewards_mb), np.stack(next_states_mb)
 
 
 if __name__ == "__main__":
@@ -229,16 +226,17 @@ if __name__ == "__main__":
     #   Initialize training hyperparameters
     #
     #################################
-
+    # resize to 256 x 256
     state_size = [4, 256, 256,
-                  3]  # Our input is a stack of 4 frames hence 160x120x3x4 (Width, height, channels*stack_size)
+                  3]  # Our input is a stack of 4 frames hence 4x160x120x3 (stack size,Width, height, channels)
+
     action_size = env.action_space.n  # 10 possible actions: turn left, turn right, move forward
     print(str(env.action_space.n))
     print(str(env.observation_space))
     possible_actions = [x for x in range(action_size)]
     stack_size = 4  # Defines how many frames are stacked together
 
-    ## TRAINING HYPERPARAMETERS
+    # TRAINING HYPERPARAMETERS
     learning_rate = 1e-3
     lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
             learning_rate,
@@ -251,11 +249,11 @@ if __name__ == "__main__":
     explore_decay_rate = 0.95
     explore_decay_step = 30
 
-    batch_size = 512  # Each 1 is AN EPISODE
-    mini_batch_size = 128
+    batch_size = 128  # Each 1 is AN EPISODE
+    mini_batch_size = 32
     gamma = 0.9  # Discounting rate
 
-    ### MODIFY THIS TO FALSE IF YOU JUST WANT TO SEE THE TRAINED AGENT
+    # MODIFY THIS TO FALSE IF YOU JUST WANT TO SEE THE TRAINED AGENT
     training = True
 
     ##################################
@@ -272,8 +270,11 @@ if __name__ == "__main__":
 
     # Initialize deque with zero-images one array for each input_image
     stacked_frames = deque([np.zeros((256, 256, 3), dtype=np.int) for i in range(stack_size)], maxlen=4)
+    # Set up Feature Extraction Layer
+    feature_extractor = FeatureExtract(state_size)
+    # Set up Proximal Policy Agent + Intrinsic Reward + Inverse Dynamics
+    agent = IntrinsicReward(state_size, action_size, feature_extractor)
     # Set up optimizer
-    agent = DriveDQN(state_size, action_size, learning_rate)
     train_opt = tf.keras.optimizers.Adam(lr_schedule)
     # memory = Memory(2000 * int(episodes/2))
     memory = ExperienceBuffer(2500)
@@ -314,7 +315,7 @@ if __name__ == "__main__":
     while training:
         # Gather training data
         nb_episodes_mb = make_batch(env, agent, train_opt, episodes, batch_size, memory, stacked_frames, stack_size,
-                                    training, possible_actions, gamma, state_size,
+                                    training, possible_actions,state_size,
                                     explore_rate=min_explore_rate + (explore_rate - min_explore_rate) * np.exp(
                                             -(1 - np.power(explore_decay_rate, epoch / explore_decay_step)) * epoch))
 
@@ -348,14 +349,12 @@ if __name__ == "__main__":
 
         mean_loss = []
         mean_total_reward = []
-
+        # TODO:
         for mini_batch in make_mini_batch((samples(memory, batch_size, randomness=0.5)), batch_size=batch_size,
                                           mini_batch_size=mini_batch_size):
-            states_mb, actions_mb, rewards_mb = mini_batch
-            loss_ = lambda: cross_entropy_loss(agent, states_mb, actions_mb, rewards_mb, training=training)
-            vars_ = lambda: agent.trainable_variables
-            train_opt.minimize(loss_, vars_)
-            mean_loss.append(loss_())
+            states_mb, actions_mb, rewards_mb, next_states_mb = mini_batch
+            agent.minimize(inputs=mini_batch, optimizer=train_opt)
+            mean_loss.append(agent.loss(mini_batch))
             mean_total_reward.append(np.sum(rewards_mb))
 
         #             weights = model.get_weights()  # Retrieves the state of the model.
