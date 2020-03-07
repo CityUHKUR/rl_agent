@@ -18,10 +18,11 @@ from collections import deque  # Ordered collection with ends
 
 from rocket.utils.exprience import ExperienceBuffer
 
-tf.keras.backend.set_floatx('float64')
+tf.executing_eagerly()
+tf.keras.backend.set_floatx('float32')
 
 
-class FeatureExtract(tf.keras.Model):
+class FullFeatureExtract(tf.keras.Model):
     """
         1. Feature Extract Layers
         2. Dense Connected Value Network
@@ -30,21 +31,67 @@ class FeatureExtract(tf.keras.Model):
     """
 
     def __init__(self, state_size, name='featureExtract'):
-        super(FeatureExtract, self).__init__()
+        super(FullFeatureExtract, self).__init__()
         self.state_size = state_size
 
         self.model = tf.keras.Sequential()
         self.model.add(FPN3D())
         down_stack = [downsample3D(32, [4, 4, 4], [4, 2, 2]),
-                downsample3D(64, [1, 4, 4], [1, 2, 2]),
-                downsample3D(128, [1, 4, 4], [1, 2, 2])]
+                      downsample3D(64, [1, 4, 4], [1, 2, 2]),
+                      downsample3D(128, [1, 4, 4], [1, 2, 2])]
         pooling = [tf.keras.layers.AveragePooling3D((1, 4, 4)),
                    tf.keras.layers.AveragePooling3D((1, 4, 4)),
                    None]
-        for (down,pool) in zip(down_stack,pooling):
+        for (down, pool) in zip(down_stack, pooling):
             self.model.add(down)
             if pool is not None:
                 self.model.add(tf.keras.layers.AveragePooling3D((1, 4, 4)))
+        self.model.add(tf.keras.layers.Flatten())
+
+    def call(self, states, training=None, mask=None):
+        return self.model(states, training=training, mask=mask)
+
+
+class ShallowFeatureExtract(tf.keras.Model):
+    def __init__(self, state_size, name='deepFeatureExtract'):
+        super(ShallowFeatureExtract, self).__init__()
+        self.state_size = state_size
+        self.model = tf.keras.Sequential()
+        self.down_stack = [
+                downsample3D(32, [3, 4, 4], [3, 2, 2], padding='same', apply_batchnorm=False),  # (bs, 4, 128, 128, 64)
+                downsample3D(64, [2, 4, 4], [2, 2, 2], padding='same'),  # (bs, 4, 64, 64, 128)
+                downsample3D(128, [1, 4, 4], [1, 2, 2], padding='same'),  # (bs, 4, 4, 32, 256)
+        ]
+        self.pooling = [tf.keras.layers.AveragePooling3D((1, 4, 4)),
+                        tf.keras.layers.AveragePooling3D((1, 4, 4)),
+                        None]
+
+        for (down, pool) in zip(self.down_stack, self.pooling):
+            self.model.add(down)
+            if pool is not None:
+                self.model.add(pool)
+        self.model.add(tf.keras.layers.Flatten())
+
+    def call(self, states, training=None, mask=None):
+        return self.model(states, training=training, mask=mask)
+
+
+class DeepFeatureExtract(tf.keras.Model):
+    def __init__(self, state_size, name='deepFeatureExtract'):
+        super(DeepFeatureExtract, self).__init__()
+        self.state_size = state_size
+        self.model = tf.keras.Sequential()
+        self.down_stack = [
+                downsample3D(64, [3, 4, 4], [3, 2, 2], padding='same', apply_batchnorm=False),  # (bs, 4, 128, 128, 64)
+                downsample3D(128, [2, 4, 4], [2, 2, 2], padding='same'),  # (bs, 4, 64, 64, 128)
+                downsample3D(256, [1, 4, 4], [1, 2, 2], padding='same'),  # (bs, 4, 4, 32, 256)
+                downsample3D(512, [1, 4, 4], [1, 2, 2], padding='same'),  # (bs, 4, 4, 32, 256)
+                downsample3D(1024, [1, 8, 8], [1, 4, 4], padding='same'),  # (bs, 4, 4, 32, 256)
+                downsample3D(512, [1, 4, 4], [1, 4, 4], padding='same'),  # (bs, 4, 4, 32, 256)
+        ]
+
+        for down in self.down_stack:
+            self.model.add(down)
         self.model.add(tf.keras.layers.Flatten())
 
     def call(self, states, training=None, mask=None):
@@ -86,7 +133,12 @@ class Target(tf.keras.Model):
                 activation=tf.nn.elu,
                 kernel_initializer=initializers.GlorotUniform)
 
-        self.model = self.fc1(self.aggregate)
+        self.fc2 = layers.Dense(
+                units=512,
+                activation=tf.nn.elu,
+                kernel_initializer=initializers.GlorotUniform)
+
+        self.model = self.fc2(self.fc1(self.aggregate))
 
         self.model = tf.keras.Model(inputs=[self.state], outputs=self.model)
 
@@ -105,7 +157,7 @@ class Target(tf.keras.Model):
         with tf.GradientTape() as tape:
             _loss = self.loss(inputs)
             grads = tape.gradient(_loss, self.model.trainable_variables)
-        optimizer.apply_gradients(grads, self.model.trainable_variables)
+        optimizer.apply_gradients(zip(grads, self.model.trainable_variables))
 
 
 class Forward(tf.keras.Model):
@@ -119,21 +171,26 @@ class Forward(tf.keras.Model):
         self.state = tf.keras.Input(shape=self.state_size)
         self.model = tf.keras.Sequential()
 
-        self.fc1 = layers.Dense(512,
+        self.actions = [layers.Dense(512,
                                 activation=layers.ELU(),
-                                kernel_initializer=initializers.GlorotNormal)
+                                kernel_initializer=initializers.GlorotNormal) for act in range(action_size)]
+        self.fc_act = [self.actions[act](self.action) for act in range(action_size)]
         self.connect = layers.concatenate(
-                [self.fc1(self.action),
+                [*self.fc_act,
                  self.feature_extract(self.state)],
                 axis=1)
         self.fc2 = layers.Dense(512,
                                 activation=layers.ELU(),
                                 kernel_initializer=initializers.GlorotUniform
                                 )(self.connect)
+        self.fc3 = layers.Dense(512,
+                                activation=layers.ELU(),
+                                kernel_initializer=initializers.GlorotUniform
+                                )(self.fc2)
 
         self.model = tf.keras.Model(
                 inputs=[self.state, self.action],
-                outputs=self.fc2)
+                outputs=self.fc3)
 
     def call(self, inputs, training=False, mask=None):
         states, actions, _, _ = inputs
@@ -149,7 +206,7 @@ class Forward(tf.keras.Model):
         with tf.GradientTape() as tape:
             _loss = self.loss(inputs)
             grads = tape.gradient(_loss, self.model.trainable_variables)
-        optimizer.apply_gradients(grads, self.model.trainable_variables)
+        optimizer.apply_gradients(zip(grads, self.model.trainable_variables))
 
 
 class Inverse(tf.keras.Model):
@@ -186,9 +243,9 @@ class Inverse(tf.keras.Model):
 
     def loss(self, inputs):
         states, actions, _, next_states = inputs
-        prediction = self.call(inputs=[self.feature_extract(states), actions, None, self.feature_extract(next_states)])
+        prediction = self.model(inputs=[self.feature_extract(states), self.feature_extract(next_states)])
         return tf.reduce_mean(
-                tf.nn.sparse_softmax_cross_entropy_with_logits(
+                tf.nn.softmax_cross_entropy_with_logits(
                         logits=prediction,
                         labels=actions))
 
@@ -197,7 +254,7 @@ class Inverse(tf.keras.Model):
         with tf.GradientTape() as tape:
             _loss = self.loss(inputs)
             grads = tape.gradient(_loss, self.model.trainable_variables)
-        optimizer.apply_gradients(grads, self.model.trainable_variables)
+        optimizer.apply_gradients(zip(grads, self.model.trainable_variables))
 
 
 class IntrinsicReward(tf.keras.Model):
@@ -212,22 +269,19 @@ class IntrinsicReward(tf.keras.Model):
         self.forward = Forward(self.state_size, self.action_size, self.feature_extract)
         self.inverse = Inverse(self.state_size, self.action_size, self.feature_extract)
         self.target = Target(self.state_size, self.action_size, self.feature_extract)
+        self.model = self.inverse.model(inputs=[self.feature_extract(self.state), self.target(self.state)])
+        self.model = tf.keras.Model(inputs=self.state, outputs=self.model)
 
     def call(self, inputs, training=False, mask=None):
-        if len(inputs) >= 4:
-            states, _, _, _ = inputs
-        else:
-            states = inputs
-        expected_state = self.target(states, training=training, mask=mask)
-        expected_action = self.inverse([self.feature_extract(states), None, None, expected_state], training=training, mask=mask)
-        return expected_action.numpy()
+        states = inputs
+        return tf.nn.softmax(self.model(inputs=states)).numpy()
 
     def loss(self, inputs):
-        state, actions, rewards, next_states = inputs
+        states, actions, rewards, next_states = inputs
         curiosity = self.forward.loss(inputs)
         return tf.math.reduce_mean(
                 tf.nn.softmax_cross_entropy_with_logits(
-                        logits=self.call(inputs, training=True),
+                        logits=self.model(inputs=states, training=True),
                         labels=actions) *
                 (rewards + curiosity))
 
@@ -238,9 +292,9 @@ class IntrinsicReward(tf.keras.Model):
         with tf.GradientTape() as tape:
             _loss = self.loss(inputs)
             grads = tape.gradient(_loss,
-                                  [self.forward.trainable_variables, self.inverse.trainable_variables, self.target])
-        optimizer.apply_gradients(grads,
-                                  [self.forward.trainable_variables, self.inverse.trainable_variables, self.target])
+                                  self.model.trainable_variables)
+        optimizer.apply_gradients(zip(grads,
+                                      self.model.trainable_variables))
         models = [self.forward, self.inverse, self.target]
         for model in models:
             model.minimize(inputs, optimizer)
