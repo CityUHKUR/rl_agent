@@ -1,28 +1,44 @@
 # Import simulation Env
-
-
 # Import training required packags
-import tensorflow as tf  # Deep Learning library
-from tensorflow.keras import layers, initializers
-import numpy as np  # Handle matrices
-
-from rocket.ignite.layers import downsample3D, upsample3D
-from rocket.ignite.loss import cross_entropy_loss
-from rocket.ignite.models import FPN3D
-from rocket.images.preprocess import stack_frames
-from rocket.ignite.types import Transition
-
-from datetime import datetime  # Help us logging time
-
-from collections import deque  # Ordered collection with ends
-
-from rocket.utils.exprience import ExperienceBuffer
-
-tf.executing_eagerly()
-tf.keras.backend.set_floatx('float32')
 
 
-class FullFeatureExtract(tf.keras.Model):
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torch.nn.functional as F
+from torch.autograd import Variable
+
+torch.backends.cudnn.enabled = True
+
+from rocket.ignite.layers import downsample3D
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+# %%
+
+class FeatureExtract(nn.Module):
+    def __init__(self):
+        super(FeatureExtract, self).__init__()
+        self.downs = [
+                downsample3D(3, 32, [3, 4, 4], [1, 2, 2], padding=[0, 1, 1], apply_batchnorm=False),
+                # (bs, 4, 128, 128, 64)
+                downsample3D(32, 64, [2, 4, 4], [1, 2, 2], padding=[0, 1, 1]),  # (bs, 4, 64, 64, 128)
+                downsample3D(64, 128, [1, 4, 4], [1, 2, 2], padding=[0, 1, 1]),  # (bs, 4, 4, 32, 256)
+                downsample3D(128, 256, [1, 4, 4], [1, 2, 2], padding=[0, 1, 1]),  # (bs, 4, 4, 32, 256)
+                downsample3D(256, 512, [1, 4, 4], [1, 2, 2], padding=[0, 1, 1]),  # (bs, 4, 4, 32, 256)
+        ]
+        self.chain = nn.ModuleList([*self.downs, nn.AvgPool3d([1, 4, 4]), nn.Flatten()])
+
+    def forward(self, x):
+        for layer in self.chain:
+            x = layer(x)
+        return x
+
+
+# %%
+
+class Target(nn.Module):
     """
         1. Feature Extract Layers
         2. Dense Connected Value Network
@@ -30,271 +46,247 @@ class FullFeatureExtract(tf.keras.Model):
         4. Softmaxed Policy Gradient
     """
 
-    def __init__(self, state_size, name='featureExtract'):
-        super(FullFeatureExtract, self).__init__()
-        self.state_size = state_size
-
-        self.model = tf.keras.Sequential()
-        self.model.add(FPN3D())
-        down_stack = [downsample3D(32, [4, 4, 4], [4, 2, 2]),
-                      downsample3D(64, [1, 4, 4], [1, 2, 2]),
-                      downsample3D(128, [1, 4, 4], [1, 2, 2])]
-        pooling = [tf.keras.layers.AveragePooling3D((1, 4, 4)),
-                   tf.keras.layers.AveragePooling3D((1, 4, 4)),
-                   None]
-        for (down, pool) in zip(down_stack, pooling):
-            self.model.add(down)
-            if pool is not None:
-                self.model.add(tf.keras.layers.AveragePooling3D((1, 4, 4)))
-        self.model.add(tf.keras.layers.Flatten())
-
-    def call(self, states, training=None, mask=None):
-        return self.model(states, training=training, mask=mask)
-
-
-class ShallowFeatureExtract(tf.keras.Model):
-    def __init__(self, state_size, name='deepFeatureExtract'):
-        super(ShallowFeatureExtract, self).__init__()
-        self.state_size = state_size
-        self.model = tf.keras.Sequential()
-        self.down_stack = [
-                downsample3D(32, [3, 4, 4], [3, 2, 2], padding='same', apply_batchnorm=False),  # (bs, 4, 128, 128, 64)
-                downsample3D(64, [2, 4, 4], [2, 2, 2], padding='same'),  # (bs, 4, 64, 64, 128)
-                downsample3D(128, [1, 4, 4], [1, 2, 2], padding='same'),  # (bs, 4, 4, 32, 256)
-        ]
-        self.pooling = [tf.keras.layers.AveragePooling3D((1, 4, 4)),
-                        tf.keras.layers.AveragePooling3D((1, 4, 4)),
-                        None]
-
-        for (down, pool) in zip(self.down_stack, self.pooling):
-            self.model.add(down)
-            if pool is not None:
-                self.model.add(pool)
-        self.model.add(tf.keras.layers.Flatten())
-
-    def call(self, states, training=None, mask=None):
-        return self.model(states, training=training, mask=mask)
-
-
-class DeepFeatureExtract(tf.keras.Model):
-    def __init__(self, state_size, name='deepFeatureExtract'):
-        super(DeepFeatureExtract, self).__init__()
-        self.state_size = state_size
-        self.model = tf.keras.Sequential()
-        self.down_stack = [
-                downsample3D(64, [3, 4, 4], [3, 2, 2], padding='same', apply_batchnorm=False),  # (bs, 4, 128, 128, 64)
-                downsample3D(128, [2, 4, 4], [2, 2, 2], padding='same'),  # (bs, 4, 64, 64, 128)
-                downsample3D(256, [1, 4, 4], [1, 2, 2], padding='same'),  # (bs, 4, 4, 32, 256)
-                downsample3D(512, [1, 4, 4], [1, 2, 2], padding='same'),  # (bs, 4, 4, 32, 256)
-                downsample3D(1024, [1, 8, 8], [1, 4, 4], padding='same'),  # (bs, 4, 4, 32, 256)
-                downsample3D(512, [1, 4, 4], [1, 4, 4], padding='same'),  # (bs, 4, 4, 32, 256)
-        ]
-
-        for down in self.down_stack:
-            self.model.add(down)
-        self.model.add(tf.keras.layers.Flatten())
-
-    def call(self, states, training=None, mask=None):
-        return self.model(states, training=training, mask=mask)
-
-
-class Target(tf.keras.Model):
-    """
-        1. Feature Extract Layers
-        2. Dense Connected Value Network
-        3. Action Values
-        4. Softmaxed Policy Gradient
-    """
-
-    def __init__(self, state_size, action_size, feature_extract, name='TargetDQN'):
+    def __init__(self, action_size, feature_size, feature_extract, lr=0.05):
         super(Target, self).__init__()
-        self.state_size = state_size
         self.action_size = action_size
         self.feature_extract = feature_extract
-
-        self.state = tf.keras.Input(shape=state_size)
+        self.lr = lr
         self.advs = []
         for i in range(action_size):
-            self.advs.append(layers.Dense(
-                    kernel_initializer=initializers.GlorotUniform,
-                    units=512,  # unwrap tuple
-                    activation=None)(self.feature_extract(self.state)))
+            self.advs += [nn.Linear(feature_size,
+                                    feature_size)]
+        self.advs = nn.ModuleList(self.advs)
+        self.value = nn.Linear(feature_size,
+                               feature_size)
 
-        self.value = layers.Dense(
-                kernel_initializer=initializers.GlorotUniform,
-                units=512,  # unwrap tuple
-                activation=None)(self.feature_extract(self.state))
-        self.aggregate = layers.concatenate(
-                [self.value, *self.advs],
-                axis=1)
+        self.fc1 = nn.Linear(feature_size,
+                             feature_size)
 
-        self.fc1 = layers.Dense(
-                units=512,
-                activation=tf.nn.elu,
-                kernel_initializer=initializers.GlorotUniform)
+        self.fc2 = nn.Linear(feature_size,
+                             feature_size)
+        self.fc3 = nn.Linear(feature_size,
+                             feature_size)
+        self.optimizer = optim.SGD(self.parameters(), lr=lr)
+        self.scheduler = torch.optim.lr_scheduler.CyclicLR(self.optimizer, mode='exp_range', base_lr=1e-8, max_lr=lr,
+                                                           step_size_up=50)
 
-        self.fc2 = layers.Dense(
-                units=512,
-                activation=tf.nn.elu,
-                kernel_initializer=initializers.GlorotUniform)
-
-        self.model = self.fc2(self.fc1(self.aggregate))
-
-        self.model = tf.keras.Model(inputs=[self.state], outputs=self.model)
-
-    def call(self, states, training=None, mask=None):
-        return self.model(states, training=training, mask=mask)
+    def forward(self, state):
+        feature = self.feature_extract.forward(state)
+        advs = [adv(feature) for adv in self.advs]
+        x = torch.stack((*advs, self.value(feature)), -2)
+        x = torch.sum(x, -2)
+        x = nn.ELU()(x)
+        x = self.fc1(x)
+        x = nn.ELU()(x)
+        x = self.fc2(x)
+        x = nn.ELU()(x)
+        x = self.fc3(x)
+        x = nn.ELU()(x)
+        return x
 
     def loss(self, inputs):
         states, _, rewards, next_states = inputs
-        return tf.math.reduce_mean(
-                tf.keras.losses.logcosh(
-                        self.feature_extract(next_states),
-                        self.call(states))
-                * rewards)
+        loss = torch.sum(nn.SmoothL1Loss(reduction='none')(
+                self.forward(states),
+                self.feature_extract.forward(next_states)),
+                dim=1)
 
-    def minimize(self, inputs, optimizer):
-        with tf.GradientTape() as tape:
-            _loss = self.loss(inputs)
-            grads = tape.gradient(_loss, self.model.trainable_variables)
-        optimizer.apply_gradients(zip(grads, self.model.trainable_variables))
+        return torch.sum(rewards * loss)
+
+    def minimize(self, inputs):
+        self.optimizer.zero_grad()
+        loss = self.loss(inputs)
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.parameters(),10)
+        self.optimizer.step()
+        self.scheduler.step()
 
 
-class Forward(tf.keras.Model):
+# %%
 
-    def __init__(self, state_size, action_size, feature_extract):
+class Forward(nn.Module):
+    """
+        1. Feature Extract Layers
+        2. Dense Connected Value Network
+        3. Action Values
+        4. Softmaxed Policy Gradient
+    """
+
+    def __init__(self, action_size, feature_size, feature_extract, lr=0.05):
         super(Forward, self).__init__()
-        self.state_size = state_size
         self.action_size = action_size
         self.feature_extract = feature_extract
-        self.action = tf.keras.Input(shape=self.action_size)
-        self.state = tf.keras.Input(shape=self.state_size)
-        self.model = tf.keras.Sequential()
+        self.lr = lr
+        self.preview = []
+        for i in range(action_size):
+            self.preview.append(nn.Linear(feature_size,
+                                          feature_size))
+        self.preview = nn.ModuleList(self.preview)
+        self.fc1 = nn.Linear(feature_size,
+                             feature_size)
 
-        self.actions = [layers.Dense(512,
-                                activation=layers.ELU(),
-                                kernel_initializer=initializers.GlorotNormal) for act in range(action_size)]
-        self.fc_act = [self.actions[act](self.action) for act in range(action_size)]
-        self.connect = layers.concatenate(
-                [*self.fc_act,
-                 self.feature_extract(self.state)],
-                axis=1)
-        self.fc2 = layers.Dense(512,
-                                activation=layers.ELU(),
-                                kernel_initializer=initializers.GlorotUniform
-                                )(self.connect)
-        self.fc3 = layers.Dense(512,
-                                activation=layers.ELU(),
-                                kernel_initializer=initializers.GlorotUniform
-                                )(self.fc2)
+        self.fc2 = nn.Linear(feature_size,
+                             feature_size)
+        self.optimizer = optim.SGD(self.parameters(), lr=lr)
+        self.scheduler = torch.optim.lr_scheduler.ExponentialLR(self.optimizer, gamma=0.85)
 
-        self.model = tf.keras.Model(
-                inputs=[self.state, self.action],
-                outputs=self.fc3)
-
-    def call(self, inputs, training=False, mask=None):
-        states, actions, _, _ = inputs
-        return self.model([states, actions], training=training, mask=mask)
+    def forward(self, state, action):
+        feature = self.feature_extract.forward(state)
+        preview = [pre(feature) for pre in self.preview]
+        preview = torch.stack(tuple(preview), -2)
+        action = torch.as_tensor(action)
+        batch_size, *shape = action.size()
+        action = action.reshape((batch_size, 1, *shape))
+        x = torch.bmm(action, preview)
+        x = torch.sum(x, -2)
+        x = nn.ELU()(x)
+        x = self.fc1(x)
+        x = nn.ELU()(x)
+        x = self.fc2(x)
+        return x
 
     def loss(self, inputs):
         states, actions, _, next_states = inputs
-        prediction = self.call([states, actions, None, None], training=True)
-        actual = self.feature_extract(next_states)
-        return tf.keras.losses.logcosh(actual, prediction)
+        loss = nn.SmoothL1Loss(reduction='mean')(
+                self.forward(states, actions),
+                self.feature_extract.forward(next_states))
+        return loss
 
-    def minimize(self, inputs, optimizer):
-        with tf.GradientTape() as tape:
-            _loss = self.loss(inputs)
-            grads = tape.gradient(_loss, self.model.trainable_variables)
-        optimizer.apply_gradients(zip(grads, self.model.trainable_variables))
+    def minimize(self, inputs):
+        self.optimizer.zero_grad()
+        loss = self.loss(inputs)
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.parameters(),10)
+        self.optimizer.step()
+        self.scheduler.step()
 
 
-class Inverse(tf.keras.Model):
-    def __init__(self, state_size, action_size, feature_extract):
+# %%
+class Inverse(nn.Module):
+    """
+        1. Feature Extract Layers
+        2. Dense Connected Value Network
+        3. Action Values
+        4. Softmaxed Policy Gradient
+    """
+
+    def __init__(self, action_size, feature_size, feature_extract, lr=0.05):
         super(Inverse, self).__init__()
-        self.state_size = state_size
         self.action_size = action_size
         self.feature_extract = feature_extract
-        self.feature_shape = (512)
-        self.state = tf.keras.Input(shape=self.feature_shape)
-        self.next_state = tf.keras.Input(shape=self.feature_shape)
-        self.state_diff = tf.keras.layers.subtract([self.next_state, self.state])
-        self.model = self.state_diff
-        self.fc1 = layers.Dense(512,
-                                activation=layers.ELU(),
-                                kernel_initializer=initializers.GlorotNormal)
+        self.lr = lr
 
-        self.fc2 = layers.Dense(int(512 / self.action_size),
-                                activation=layers.ELU(),
-                                kernel_initializer=initializers.GlorotNormal)
+        self.fc1 = nn.Linear(feature_size,
+                             feature_size)
 
-        self.fc3 = layers.Dense(self.action_size,
-                                activation=layers.ELU(),
-                                kernel_initializer=initializers.GlorotNormal)
+        self.fc2 = nn.Linear(feature_size,
+                             int(feature_size / action_size))
+        self.fc3 = nn.Linear(int(feature_size / action_size),
+                             action_size)
+        self.optimizer = optim.SGD(self.parameters(), lr=lr)
+        self.scheduler = torch.optim.lr_scheduler.ExponentialLR(self.optimizer, gamma=0.95)
 
-        self.chain = [self.fc1, self.fc2, self.fc3]
-        for layer in self.chain:
-            self.model = layer(self.model)
-        self.model = tf.keras.models.Model(inputs=[self.state, self.next_state], outputs=[self.model])
-
-    def call(self, inputs, training=None, mask=None):
-        states, _, _, next_states = inputs
-        return tf.nn.softmax(self.model(inputs=[states, next_states], training=training, mask=mask))
+    def forward(self, state, next_state):
+        # Expected features input instead of Raw image
+        x = torch.sub(next_state, state)
+        x = nn.ELU()(x)
+        x = self.fc1(x)
+        x = nn.GELU()(x)
+        x = self.fc2(x)
+        x = nn.GELU()(x)
+        x = self.fc3(x)
+        x = nn.ReLU()(x)
+        x = nn.Softmax(dim=-1)(x)
+        return x
 
     def loss(self, inputs):
         states, actions, _, next_states = inputs
-        prediction = self.model(inputs=[self.feature_extract(states), self.feature_extract(next_states)])
-        return tf.reduce_mean(
-                tf.nn.softmax_cross_entropy_with_logits(
-                        logits=prediction,
-                        labels=actions))
+        loss = nn.BCEWithLogitsLoss(reduction='mean')(
+                self.forward(self.feature_extract.forward(states),
+                             self.feature_extract.forward(next_states)), actions)
+        return loss
 
-    def minimize(self, inputs, optimizer):
-        states, actions, _, next_states = inputs
-        with tf.GradientTape() as tape:
-            _loss = self.loss(inputs)
-            grads = tape.gradient(_loss, self.model.trainable_variables)
-        optimizer.apply_gradients(zip(grads, self.model.trainable_variables))
+    def minimize(self, inputs):
+        self.optimizer.zero_grad()
+        loss = self.loss(inputs)
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.parameters(),10)
+        self.optimizer.step()
+        self.scheduler.step()
 
 
-class IntrinsicReward(tf.keras.Model):
-    def __init__(self, state_size, action_size, feature_extract):
+# %%
+class IntrinsicReward(nn.Module):
+    """
+        1. Feature Extract Layers
+        2. Dense Connected Value Network
+        3. Action Values
+        4. Softmaxed Policy Gradient
+    """
+
+    def __init__(self, action_size, feature_size, feature_extract, lr=0.05):
         super(IntrinsicReward, self).__init__()
-        self.state_size = state_size
         self.action_size = action_size
         self.feature_extract = feature_extract
-        self.action = tf.keras.Input(shape=self.action_size)
-        self.state = tf.keras.Input(shape=self.state_size)
-        self.next_state = tf.keras.Input(shape=self.state_size)
-        self.forward = Forward(self.state_size, self.action_size, self.feature_extract)
-        self.inverse = Inverse(self.state_size, self.action_size, self.feature_extract)
-        self.target = Target(self.state_size, self.action_size, self.feature_extract)
-        self.model = self.inverse.model(inputs=[self.feature_extract(self.state), self.target(self.state)])
-        self.model = tf.keras.Model(inputs=self.state, outputs=self.model)
+        self.lr = lr
+        self.Forward = Forward(action_size, feature_size, feature_extract, lr)
+        self.Inverse = Inverse(action_size, feature_size, feature_extract, lr)
+        self.Target = Target(action_size, feature_size, feature_extract, lr)
+        self.optimizer = optim.SGD(self.parameters(), lr=lr)
+        self.scheduler = torch.optim.lr_scheduler.CyclicLR(self.optimizer, mode='exp_range', base_lr=1e-8, max_lr=lr,
+                                                           step_size_up=50)
+        self.fc1 = nn.Linear(feature_size,
+                             feature_size)
 
-    def call(self, inputs, training=False, mask=None):
-        states = inputs
-        return tf.nn.softmax(self.model(inputs=states)).numpy()
+        self.fc2 = nn.Linear(feature_size,
+                             feature_size)
+        self.fc3 = nn.Linear(feature_size,
+                             action_size)
+
+    def forward(self, state):
+        # Expected features input instead of Raw image
+        expected_state = self.Target.forward(state)
+        expected_action = self.Inverse(self.feature_extract.forward(state),expected_state)
+        # next_state = self.Forward.forward(state, expected_action)
+        x = self.fc1(self.feature_extract(state))
+        # x = nn.GELU()(x)
+        # x = self.fc2(x)
+        # x = nn.GELU()(x)
+        # x = self.fc3(x)
+        # x = nn.ReLU()(x)
+
+        # x = nn.Softmax(dim=1)(x)
+        return expected_action
 
     def loss(self, inputs):
         states, actions, rewards, next_states = inputs
-        curiosity = self.forward.loss(inputs)
-        return tf.math.reduce_mean(
-                tf.nn.softmax_cross_entropy_with_logits(
-                        logits=self.model(inputs=states, training=True),
-                        labels=actions) *
-                (rewards + curiosity))
+        curiosity = torch.mean(nn.SmoothL1Loss(reduction='none')(
+                self.Forward.forward(states, actions),
+                self.feature_extract.forward(next_states)), -1)
+        loss = torch.sum(nn.BCEWithLogitsLoss(reduction='none')(
+                self.forward(states),
+                actions), dim=1)
+        # print(loss.size())
+        # print((rewards+curiosity).size())
+        return torch.mean(loss * (rewards + curiosity))
 
-    # def updates(self):
-    #     self.target.set_weights(self.driver.get_weights())
+    def minimize(self, inputs):
+        self.optimizer.zero_grad()
+        loss = self.loss(inputs)
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.parameters(),10)
+        self.optimizer.step()
+        self.scheduler.step()
+        models_to_update = [self.Target, self.Forward, self.Inverse]
+        for model in models_to_update:
+            model.minimize(inputs)
 
-    def minimize(self, inputs, optimizer):
-        with tf.GradientTape() as tape:
-            _loss = self.loss(inputs)
-            grads = tape.gradient(_loss,
-                                  self.model.trainable_variables)
-        optimizer.apply_gradients(zip(grads,
-                                      self.model.trainable_variables))
-        models = [self.forward, self.inverse, self.target]
-        for model in models:
-            model.minimize(inputs, optimizer)
+    def cuda(self, device=None):
+        super(IntrinsicReward, self).cuda()
+        models_to_update = [self.Target, self.Forward, self.Inverse]
+        for model in models_to_update:
+            model.cuda(device)
+        self.optimizer = optim.SGD(self.parameters(), lr=self.lr)
+        self.scheduler = torch.optim.lr_scheduler.CyclicLR(self.optimizer, mode='exp_range', base_lr=1e-8, max_lr=self.lr,
+                                                           step_size_up=50)
+        return self._apply(lambda t: t.cuda(device))

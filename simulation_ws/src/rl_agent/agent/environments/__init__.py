@@ -1,6 +1,6 @@
 from gym.envs.registration import register
 
-MAX_STEPS = 1000
+MAX_STEPS = 2000
 
 register(
     id='DeepRacer-v0',

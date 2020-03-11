@@ -32,7 +32,7 @@ FINISH_LINE = 100
 CRASHED = 0
 NO_PROGRESS = -1
 FINISHED = 100000.0
-MAX_STEPS = 400
+MAX_STEPS = 2000
 
 # WORLD NAME
 EASY_TRACK_WORLD = 'easy_track'
@@ -43,6 +43,7 @@ HARD_TRACK_WORLD = 'hard_track'
 SLEEP_AFTER_RESET_TIME_IN_SECOND = 0.5
 SLEEP_BETWEEN_ACTION_AND_REWARD_CALCULATION_TIME_IN_SECOND = 0.1
 SLEEP_WAITING_FOR_IMAGE_TIME_IN_SECOND = 0.01
+
 
 ### Gym Env ###
 class DeepRacerEnv(gym.Env):
@@ -83,7 +84,6 @@ class DeepRacerEnv(gym.Env):
             self.world_name = rospy.get_param('WORLD_NAME')
             self.set_waypoints()
 
-
         self.reward_in_episode = 0
         self.prev_progress = 0
         self.steps = 0
@@ -91,7 +91,6 @@ class DeepRacerEnv(gym.Env):
     def reset(self):
         print('Total Reward Reward=%.2f' % self.reward_in_episode,
               'Total Steps=%.2f' % self.steps)
-
 
         self.reward_in_episode = 0
         self.reward = None
@@ -111,11 +110,18 @@ class DeepRacerEnv(gym.Env):
     def racecar_reset(self):
         rospy.wait_for_service('gazebo/set_model_state')
 
+        waypoints = list(self.waypoints)
+        random_waypoint = int(np.random.choice(len(waypoints),1))
+        closest_waypoint = self.get_closest_waypoint()
+        x, y = waypoints[(random_waypoint) % len(waypoints)]
+        x_next, y_next  = waypoints[(random_waypoint+1) % len(waypoints)]
+        orientation = np.arctan2(y_next-y,x_next-x)
+
         modelState = ModelState()
         modelState.pose.position.z = 0
         modelState.pose.orientation.x = 0
         modelState.pose.orientation.y = 0
-        modelState.pose.orientation.z = 0
+        modelState.pose.orientation.z = orientation
         modelState.pose.orientation.w = 0  # Use this to randomize the orientation of the car
         modelState.twist.linear.x = 0
         modelState.twist.linear.y = 0
@@ -125,6 +131,8 @@ class DeepRacerEnv(gym.Env):
         modelState.twist.angular.z = 0
         modelState.model_name = 'racecar'
 
+
+
         if self.world_name.startswith(MEDIUM_TRACK_WORLD):
             modelState.pose.position.x = -1.40
             modelState.pose.position.y = 2.13
@@ -132,8 +140,10 @@ class DeepRacerEnv(gym.Env):
             modelState.pose.position.x = -1.44
             modelState.pose.position.y = -0.06
         elif self.world_name.startswith(HARD_TRACK_WORLD):
-            modelState.pose.position.x = 1.75
-            modelState.pose.position.y = 0.6
+            # modelState.pose.position.x = 1.75
+            # modelState.pose.position.y = 0.6
+            modelState.pose.position.x = x
+            modelState.pose.position.y = y
         else:
             raise ValueError("Unknown simulation world: {}".format(self.world_name))
 
@@ -183,23 +193,21 @@ class DeepRacerEnv(gym.Env):
                         throttle, steering, track_width, waypoints, closest_waypoints):
         rewards = 1e-3
         if distance_from_center >= 0.0 and distance_from_center <= 0.02:
-            rewards += 1.0
+            rewards += 5.0
         elif distance_from_center >= 0.02 and distance_from_center <= 0.03:
-            rewards += 0.3
+            rewards += 3
         elif distance_from_center >= 0.03 and distance_from_center <= 0.05:
-            rewards += 0.1
+            rewards += 1
         elif distance_from_center >= 0.05 and distance_from_center <= 0.1:
-            rewards += 0.05
+            rewards += 0.1
         else:
             rewards += 0.01
 
-        if steering >= 1.0 :
+        if steering >= 1.0:
             rewards *= 0.5
 
-        # rewards *= progress/10.0
-        
-
         return rewards  # like crashed
+
 
     def infer_reward_state(self, steering_angle, throttle):
         # Wait till we have a input_image from the camera
@@ -230,7 +238,7 @@ class DeepRacerEnv(gym.Env):
             else:
                 reward = FINISHED / self.steps
                 done = True
-        elif self.steps > MAX_STEPS :
+        elif self.steps > MAX_STEPS:
             reward = 0
             done = True
         else:
@@ -246,57 +254,96 @@ class DeepRacerEnv(gym.Env):
         self.done = done
         self.next_state = state
 
-
     def set_waypoints(self):
         if self.world_name.startswith(MEDIUM_TRACK_WORLD):
             self.waypoints = vertices = np.zeros((8, 2))
             self.road_width = 0.50
-            vertices[0][0] = -0.99; vertices[0][1] = 2.25;
-            vertices[1][0] = 0.69;  vertices[1][1] = 2.26;
-            vertices[2][0] = 1.37;  vertices[2][1] = 1.67;
-            vertices[3][0] = 1.48;  vertices[3][1] = -1.54;
-            vertices[4][0] = 0.81;  vertices[4][1] = -2.44;
-            vertices[5][0] = -1.25; vertices[5][1] = -2.30;
-            vertices[6][0] = -1.67; vertices[6][1] = -1.64;
-            vertices[7][0] = -1.73; vertices[7][1] = 1.63;
+            vertices[0][0] = -0.99;
+            vertices[0][1] = 2.25;
+            vertices[1][0] = 0.69;
+            vertices[1][1] = 2.26;
+            vertices[2][0] = 1.37;
+            vertices[2][1] = 1.67;
+            vertices[3][0] = 1.48;
+            vertices[3][1] = -1.54;
+            vertices[4][0] = 0.81;
+            vertices[4][1] = -2.44;
+            vertices[5][0] = -1.25;
+            vertices[5][1] = -2.30;
+            vertices[6][0] = -1.67;
+            vertices[6][1] = -1.64;
+            vertices[7][0] = -1.73;
+            vertices[7][1] = 1.63;
         elif self.world_name.startswith(EASY_TRACK_WORLD):
             self.waypoints = vertices = np.zeros((2, 2))
             self.road_width = 0.90
-            vertices[0][0] = -1.08;   vertices[0][1] = -0.05;
-            vertices[1][0] =  1.08;   vertices[1][1] = -0.05;
+            vertices[0][0] = -1.08;
+            vertices[0][1] = -0.05;
+            vertices[1][0] = 1.08;
+            vertices[1][1] = -0.05;
         else:
             self.waypoints = vertices = np.zeros((30, 2))
             self.road_width = 0.44
-            vertices[0][0] = 1.5;     vertices[0][1] = 0.58;
-            vertices[1][0] = 5.5;     vertices[1][1] = 0.58;
-            vertices[2][0] = 5.6;     vertices[2][1] = 0.6;
-            vertices[3][0] = 5.7;     vertices[3][1] = 0.65;
-            vertices[4][0] = 5.8;     vertices[4][1] = 0.7;
-            vertices[5][0] = 5.9;     vertices[5][1] = 0.8;
-            vertices[6][0] = 6.0;     vertices[6][1] = 0.9;
-            vertices[7][0] = 6.08;    vertices[7][1] = 1.1;
-            vertices[8][0] = 6.1;     vertices[8][1] = 1.2;
-            vertices[9][0] = 6.1;     vertices[9][1] = 1.3;
-            vertices[10][0] = 6.1;    vertices[10][1] = 1.4;
-            vertices[11][0] = 6.07;   vertices[11][1] = 1.5;
-            vertices[12][0] = 6.05;   vertices[12][1] = 1.6;
-            vertices[13][0] = 6;      vertices[13][1] = 1.7;
-            vertices[14][0] = 5.9;    vertices[14][1] = 1.8;
-            vertices[15][0] = 5.75;   vertices[15][1] = 1.9;
-            vertices[16][0] = 5.6;    vertices[16][1] = 2.0;
-            vertices[17][0] = 4.2;    vertices[17][1] = 2.02;
-            vertices[18][0] = 4;      vertices[18][1] = 2.1;
-            vertices[19][0] = 2.6;    vertices[19][1] = 3.92;
-            vertices[20][0] = 2.4;    vertices[20][1] = 4;
-            vertices[21][0] = 1.2;    vertices[21][1] = 3.95;
-            vertices[22][0] = 1.1;    vertices[22][1] = 3.92;
-            vertices[23][0] = 1;      vertices[23][1] = 3.88;
-            vertices[24][0] = 0.8;    vertices[24][1] = 3.72;
-            vertices[25][0] = 0.6;    vertices[25][1] = 3.4;
-            vertices[26][0] = 0.58;   vertices[26][1] = 3.3;
-            vertices[27][0] = 0.57;   vertices[27][1] = 3.2;
-            vertices[28][0] = 1;      vertices[28][1] = 1;
-            vertices[29][0] = 1.25;   vertices[29][1] = 0.7;
+            vertices[0][0] = 1.5;
+            vertices[0][1] = 0.58;
+            vertices[1][0] = 5.5;
+            vertices[1][1] = 0.58;
+            vertices[2][0] = 5.6;
+            vertices[2][1] = 0.6;
+            vertices[3][0] = 5.7;
+            vertices[3][1] = 0.65;
+            vertices[4][0] = 5.8;
+            vertices[4][1] = 0.7;
+            vertices[5][0] = 5.9;
+            vertices[5][1] = 0.8;
+            vertices[6][0] = 6.0;
+            vertices[6][1] = 0.9;
+            vertices[7][0] = 6.08;
+            vertices[7][1] = 1.1;
+            vertices[8][0] = 6.1;
+            vertices[8][1] = 1.2;
+            vertices[9][0] = 6.1;
+            vertices[9][1] = 1.3;
+            vertices[10][0] = 6.1;
+            vertices[10][1] = 1.4;
+            vertices[11][0] = 6.07;
+            vertices[11][1] = 1.5;
+            vertices[12][0] = 6.05;
+            vertices[12][1] = 1.6;
+            vertices[13][0] = 6;
+            vertices[13][1] = 1.7;
+            vertices[14][0] = 5.9;
+            vertices[14][1] = 1.8;
+            vertices[15][0] = 5.75;
+            vertices[15][1] = 1.9;
+            vertices[16][0] = 5.6;
+            vertices[16][1] = 2.0;
+            vertices[17][0] = 4.2;
+            vertices[17][1] = 2.02;
+            vertices[18][0] = 4;
+            vertices[18][1] = 2.1;
+            vertices[19][0] = 2.6;
+            vertices[19][1] = 3.92;
+            vertices[20][0] = 2.4;
+            vertices[20][1] = 4;
+            vertices[21][0] = 1.2;
+            vertices[21][1] = 3.95;
+            vertices[22][0] = 1.1;
+            vertices[22][1] = 3.92;
+            vertices[23][0] = 1;
+            vertices[23][1] = 3.88;
+            vertices[24][0] = 0.8;
+            vertices[24][1] = 3.72;
+            vertices[25][0] = 0.6;
+            vertices[25][1] = 3.4;
+            vertices[26][0] = 0.58;
+            vertices[26][1] = 3.3;
+            vertices[27][0] = 0.57;
+            vertices[27][1] = 3.2;
+            vertices[28][0] = 1;
+            vertices[28][1] = 1;
+            vertices[29][0] = 1.25;
+            vertices[29][1] = 0.7;
 
     def get_closest_waypoint(self):
         res = 0
@@ -311,6 +358,7 @@ class DeepRacerEnv(gym.Env):
                 res = index
             index = index + 1
         return res
+
 
 class DeepRacerDiscreteEnv(DeepRacerEnv):
     def __init__(self):

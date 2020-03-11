@@ -5,96 +5,21 @@ from datetime import datetime  # Help us logging time
 import environments
 import gym
 from gym.envs.registration import register
-
+import os
 import numpy as np  # Handle matrices
 # Import training required packags
-import tensorflow as tf  # Deep Learning library
+import torch  # Deep Learning library
+import torch.nn as nn
+import torch.nn.functional as F
 from rocket import ignite, images
-from drivers import IntrinsicReward,FeatureExtract
-from rocket.ignite.layers import downsample3D
-from rocket.ignite.models import FPN3D
+from drivers import IntrinsicReward, FeatureExtract
+
 from rocket.ignite.types import Transition
+from rocket.ignite.layers import init_conv, init_linear
 from rocket.images.preprocess import stack_frames
 from rocket.utils.exprience import ExperienceBuffer
 
-tf.keras.backend.set_floatx('float32')
-
-# # Define Out Driver Forward Value Network
-# class DriveDQN(tf.keras.Model):
-#     """
-#         1. Feature Extract Layers
-#         2. Dense Connected Value Network
-#         3. Action Values
-#         4. Softmaxed Policy Gradient
-#     """
-#
-#     def __init__(self, state_size, action_size, learning_rate, feature_extract, name='DriveDQN'):
-#         super(DriveDQN, self).__init__()
-#         self.state_size = state_size
-#         self.action_size = action_size
-#         self.learning_rate = learning_rate
-#
-#         self.inputs = tf.keras.layers.Input(shape=(4, 256, 256, 3))
-#         self.fe = feature_extract
-#         self.model = tf.keras.Sequential()
-#         self.model.add(self.fe)
-#
-#         ## --> [512]
-#         self.fc1 = layers.Dense(
-#                 units=512,
-#                 activation=tf.nn.elu,
-#                 kernel_initializer=initializers.GlorotUniform)(self.model(self.inputs))
-#         self.advs = []
-#         for i in range(action_size):
-#             self.advs.append(layers.Dense(
-#                     kernel_initializer=initializers.GlorotUniform,
-#                     units=512,  # unwrap tuple
-#                     activation=None)(self.fc1))
-#         self.fc2 = layers.Dense(
-#                 units=512,
-#                 activation=tf.nn.elu,
-#                 kernel_initializer=initializers.GlorotUniform)(self.model(self.inputs))
-#
-#         self.value = layers.Dense(
-#                 kernel_initializer=initializers.GlorotUniform,
-#                 units=512,  # unwrap tuple
-#                 activation=None)(self.fc2)
-#         self.aggeregate = layers.Concatenate()(
-#                 [layers.Dense(
-#                         units=128,
-#                         activation=tf.nn.elu,
-#                         kernel_initializer=initializers.GlorotUniform)(
-#                         layers.multiply([self.value, adv]))
-#                         for adv in self.advs])
-#         self.logits = layers.Dense(kernel_initializer=initializers.GlorotUniform,
-#                                    units=action_size,  # unwrap tuple
-#                                    activation=None)(self.aggeregate)
-#         self.model = tf.keras.Model(inputs=self.inputs, outputs=self.logits)
-#
-#     def call(self, state, training=False):
-#         return tf.nn.softmax(self.model(state, training=training)).numpy()
-
-
-# class TargetDQN(tf.keras.Model):
-#     """
-#         1. Feature Extract Layers
-#         2. Dense Connected Value Network
-#         3. Action Values
-#         4. Softmaxed Policy Gradient
-#     """
-#
-#     def __init__(self, state_size, action_size, learning_rate, feature_extract, name='TargetDQN'):
-#         super(TargetDQN, self).__init__()
-#         self.state_size = state_size
-#         self.action_size = action_size
-#         self.learning_rate = learning_rate
-#         self.fe = feature_extract
-#
-#         self.model = tf.keras.Sequential()
-#         self.fc1 = layers.Dense(
-#                 units=512,
-#                 activation=tf.nn.elu,
-#                 kernel_initializer=initializers.GlorotUniform)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def discount_and_normalize_rewards(episode_rewards, gamma):
@@ -111,7 +36,7 @@ def discount_and_normalize_rewards(episode_rewards, gamma):
     return discounted_episode_rewards
 
 
-def make_batch(env, model, opt, episodes, batch_size, memory, stacked_frames, stack_size, training,
+def make_batch(env, model, episodes, memory, stacked_frames, stack_size, training,
                possible_actions, state_size, explore_rate):
     # Initialize lists: states, actions, rewards_of_episode, rewards_of_batch, discounted_rewards
     # states, actions, rewards_of_episode, rewards_of_batch, discounted_rewards = [], [], [], [], []
@@ -130,8 +55,8 @@ def make_batch(env, model, opt, episodes, batch_size, memory, stacked_frames, st
 
     while True:
         # Run State Through Policy & Calculate Action
-        action_probability_distribution = model(state.reshape(1, *state_size), training=training)
-
+        action_probability_distribution = model(
+            torch.as_tensor(state.reshape(1, *state_size)).to(device=device, dtype=torch.float)).detach()
         # REMEMBER THAT WE ARE IN A STOCHASTIC POLICY SO WE DON'T ALWAYS TAKE THE ACTION WITH THE HIGHEST PROBABILITY
         # (For instance if the action with the best probability for state S is a1 with 70% chances, there is
         # 30% chance that we take action a2)
@@ -139,9 +64,11 @@ def make_batch(env, model, opt, episodes, batch_size, memory, stacked_frames, st
             action = np.random.choice(possible_actions)
         else:
             action = np.random.choice(possible_actions,
-                                      p=action_probability_distribution.ravel())  # select action w.r.t the actions prob
+                                      p=action_probability_distribution.view(
+                                          -1).cpu().numpy())  # select action w.r.t the actions prob
         action = possible_actions[action]
-        action_one_hot = tf.one_hot(action, len(possible_actions)).numpy()
+        action_one_hot = np.zeros(len(possible_actions))
+        action_one_hot[action] = 1
         # Perform action
         next_state, reward, done, info = env.step(action)
         next_state, stacked_frames = stack_frames(stacked_frames, next_state, False, stack_size=stack_size)
@@ -186,9 +113,9 @@ def make_batch(env, model, opt, episodes, batch_size, memory, stacked_frames, st
             # If not done, the next_state become the current state
             # run_steps += 1
 
-            print(np.shape(next_state))
-            model.forward.minimize(inputs=[state.reshape(1, *state_size), action_one_hot.reshape(1, *np.shape(action_one_hot)), reward, next_state.reshape(1, *state_size)], optimizer=opt)
-            model.inverse.minimize(inputs=[state.reshape(1, *state_size), action_one_hot.reshape(1, *np.shape(action_one_hot)), reward, next_state.reshape(1, *state_size)], optimizer=opt)
+            # print(np.shape(next_state))
+            # model.forward.minimize(inputs=[state.reshape(1, *state_size), action_one_hot, reward, next_state.reshape(1, *state_size)], optimizer=opt)
+            # model.inverse.minimize(inputs=[state.reshape(1, *state_size), action_one_hot, reward, next_state.reshape(1, *state_size)], optimizer=opt)
             state = next_state
 
     return episode_num
@@ -213,7 +140,7 @@ def samples(memory, batch_size, randomness):
     actions_mb = batch.action
     rewards_mb = batch.reward
     next_states_mb = batch.next_state
-
+    print(np.shape(states_mb))
     return np.stack(states_mb), np.stack(actions_mb), np.stack(rewards_mb), np.stack(next_states_mb)
 
 
@@ -227,8 +154,8 @@ if __name__ == "__main__":
     #
     #################################
     # resize to 256 x 256
-    state_size = [4, 256, 256,
-                  3]  # Our input is a stack of 4 frames hence 4x160x120x3 (stack size,Width, height, channels)
+    state_size = [3, 4, 128, 128,
+                  ]  # Our input is a stack of 4 frames hence 4x160x120x3 (stack size,Width, height, channels)
 
     action_size = env.action_space.n  # 10 possible actions: turn left, turn right, move forward
     print(str(env.action_space.n))
@@ -238,19 +165,15 @@ if __name__ == "__main__":
 
     # TRAINING HYPERPARAMETERS
     learning_rate = 1e-3
-    lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
-            learning_rate,
-            decay_steps=50,
-            decay_rate=0.95,
-            staircase=True)
-    episodes = 10  # Total episodes for sampling
+    max_episodes = 10
+    min_episodes = 5  # Total episodes for sampling
     explore_rate = 0.5
     min_explore_rate = 0.1
     explore_decay_rate = 0.95
     explore_decay_step = 30
-
-    batch_size = 128  # Each 1 is AN EPISODE
-    mini_batch_size = 32
+    epoch = 0
+    batch_size = 2048  # Each 1 is AN EPISODE
+    mini_batch_size = 128
     gamma = 0.9  # Discounting rate
 
     # MODIFY THIS TO FALSE IF YOU JUST WANT TO SEE THE TRAINED AGENT
@@ -269,15 +192,46 @@ if __name__ == "__main__":
     #################################
 
     # Initialize deque with zero-images one array for each input_image
-    stacked_frames = deque([np.zeros((256, 256, 3), dtype=np.int) for i in range(stack_size)], maxlen=4)
+    stacked_frames = deque([np.zeros((3, 128, 128), dtype=np.int) for i in range(stack_size)], maxlen=4)
+
+    # Create Save checkpoint
+    save_point = "./ckpt/deepracer/icn+entropy.pth"
+    if not os.path.exists(save_point):
+        f = open(save_point,"w+")
+        f.close()
+
+
+
     # Set up Feature Extraction Layer
-    feature_extractor = FeatureExtract(state_size)
+
+    feature_extractor = FeatureExtract().cuda()
+
+
+
     # Set up Proximal Policy Agent + Intrinsic Reward + Inverse Dynamics
-    agent = IntrinsicReward(state_size, action_size, feature_extractor)
-    # Set up optimizer
-    train_opt = tf.keras.optimizers.Adam(lr_schedule)
-    # memory = Memory(2000 * int(episodes/2))
-    memory = ExperienceBuffer(2500)
+    curiosity_agent = IntrinsicReward(action_size, 512, feature_extractor)
+
+    # restore saved model if available
+    if not os.stat(save_point).st_size == 0:
+        checkpoint = torch.load(save_point, map_location=device)
+
+        curiosity_agent_state_dict =  checkpoint['curiosity_agent_state_dict']
+        curiosity_agent_state_dict.pop('fc2.weight')
+        curiosity_agent_state_dict.pop('fc2.bias')
+        curiosity_agent_state_dict.pop('fc3.weight')
+        feature_extractor.load_state_dict(checkpoint['feature_extractor_state_dict'],strict=False)
+        curiosity_agent.load_state_dict(curiosity_agent_state_dict,strict=False)
+        # curiosity_agent.optimizer.load_state_dict(checkpoint['curiosity_agent_optimizer_state_dict'],strict=False)
+        # epoch = checkpoint['epoch']
+
+    curiosity_agent = curiosity_agent.apply(init_linear)
+    curiosity_agent = curiosity_agent.apply(init_conv)
+    curiosity_agent = curiosity_agent.to(device)
+    curiosity_agent = curiosity_agent.cuda()
+    curiosity_agent = curiosity_agent.apply(lambda m: m.cuda())
+    # Use Internal Optimizer
+
+    memory = ExperienceBuffer(1500 * 5)
 
     ################################
     #
@@ -291,49 +245,30 @@ if __name__ == "__main__":
     #
     #############################
 
-    # Create Save checkpoint
 
-    checkpoint = tf.train.Checkpoint(step=tf.Variable(1), optimizer=train_opt, model=agent)
-    manager = tf.train.CheckpointManager(checkpoint, directory="./ckpt/model", max_to_keep=5)
     # Define the Keras TensorBoard callback.
-    current_time = datetime.now().strftime("%Y%m%d-%H%M%S")
-    log_dir = "./logs/deepracer"
-    rewards_log_dir = log_dir + "/rewards/" + current_time
-    loss_log_dir = log_dir + "/loss/" + current_time
-    rewards_summary_writer = tf.summary.create_file_writer(rewards_log_dir)
-    loss_summary_writer = tf.summary.create_file_writer(loss_log_dir)
 
     # Define Summary Metrics
 
-    # restore saved model if available
-    checkpoint.restore(manager.latest_checkpoint)
     print("[INFO] START TRAINING")
-    epoch = 1
-    # allRewards=[]
-    # mean_reward_total=[]
-    # average_reward = []
+    epoch += 1
+    episodes = 15
     while training:
         # Gather training data
-        nb_episodes_mb = make_batch(env, agent, train_opt, episodes, batch_size, memory, stacked_frames, stack_size,
-                                    training, possible_actions,state_size,
+
+        nb_episodes_mb = make_batch(env, curiosity_agent, episodes, memory, stacked_frames, stack_size,
+                                    training, possible_actions, state_size,
                                     explore_rate=min_explore_rate + (explore_rate - min_explore_rate) * np.exp(
                                             -(1 - np.power(explore_decay_rate, epoch / explore_decay_step)) * epoch))
 
         ### These part is used for analytics
         # Calculate the total reward ot the batch
 
-        # allRewards.append(total_reward_of_that_batch)
-
         # Calculate the mean reward of the batch
-        # Total rewards of batch / nb episodes in that batch
-        # mean_reward_of_that_batch = np.divide(total_reward_of_that_batch, nb_episodes_mb)
-        # mean_reward_total.append(mean_reward_of_that_batch)
 
         # Calculate the average reward of all training
-        # mean_reward_of_that_batch / epoch
-        # average_reward_of_all_training = np.divide(np.sum(mean_reward_total), epoch)
 
-        # Calculate maximum reward recorded 
+        # Calculate maximum reward recorded
         # maximumRewardRecorded = np.amax(allRewards)
 
         print("==========================================")
@@ -341,37 +276,42 @@ if __name__ == "__main__":
         print("-----------")
         print("Number of training episodes: {}".format(nb_episodes_mb))
 
-        # print("Mean Reward of that batch {}".format(mean_reward_of_that_batch))
-        # print("Average Reward of all training: {}".format(average_reward_of_all_training))
-        # print("Max reward for a batch so far: {}".format(maximumRewardRecorded))
-
         # Feedforward, gradient and backpropagation
 
         mean_loss = []
         mean_total_reward = []
-        # TODO:
+        mini_batch_run = 1
         for mini_batch in make_mini_batch((samples(memory, batch_size, randomness=0.5)), batch_size=batch_size,
                                           mini_batch_size=mini_batch_size):
             states_mb, actions_mb, rewards_mb, next_states_mb = mini_batch
-            agent.minimize(inputs=mini_batch, optimizer=train_opt)
-            mean_loss.append(agent.loss(mini_batch))
-            mean_total_reward.append(np.sum(rewards_mb))
 
-        #             weights = model.get_weights()  # Retrieves the state of the model.
-        #             model.set_weights(weights)  # Sets the state of the model.
+            mini_batch = tuple([torch.as_tensor(mb).to(device=device, dtype=torch.float) for mb in
+                                [states_mb, actions_mb, rewards_mb, next_states_mb]])
+
+            states_mb, actions_mb, rewards_mb, next_states_mb = mini_batch
+
+            print("mini_batch running {} times ".format(mini_batch_run))
+
+            curiosity_agent.minimize(inputs=mini_batch)
+
+            mean_loss.append(curiosity_agent.loss(mini_batch).detach().cpu().numpy())
+            mean_total_reward.append(np.sum(rewards_mb.detach().cpu().numpy()))
+
+            mini_batch_run += 1
 
         print("Total reward: {}".format(np.mean(mean_total_reward), nb_episodes_mb))
         print("Training Loss: {}".format(np.mean(mean_loss)))
 
         # write summary to files
-        with loss_summary_writer.as_default():
-            tf.summary.scalar('train_loss', np.mean(mean_loss), step=epoch)
-        with rewards_summary_writer.as_default():
-            tf.summary.scalar('total_reward_of_that_batch', np.mean(mean_total_reward), step=epoch)
 
-        # Save Model
-        checkpoint.step.assign_add(1)
-        if int(checkpoint.step) % 10 == 0:
-            save_path = manager.save()
+        # save checkpoint
+        if epoch % 10 == 0:
+            torch.save({
+                    'epoch':                                epoch,
+                    'feature_extractor_state_dict':         feature_extractor.state_dict(),
+                    'curiosity_agent_state_dict':           curiosity_agent.state_dict(),
+                    'curiosity_agent_optimizer_state_dict': curiosity_agent.optimizer.state_dict(),
+            }, save_point)
 
         epoch += 1
+        episodes = int(max_episodes * np.exp(-epoch * gamma / 30)) + min_episodes
