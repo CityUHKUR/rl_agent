@@ -26,11 +26,11 @@ setup(
         'redis==2.10.6',
         'rospkg==1.1.7',
         'scipy==0.19.0',
-        'pytorch',
+        'pytorch>=1.9',
         'torchvision',
         'rl-coach-slim==0.11.1'
     ],
-    entry_points = {
+    entry_points={
         'console_scripts': [
             'run_rollout_rl_agent=agent.rollout_worker:main',
             'run_local_rl_agent=envs.local_worker:main'
