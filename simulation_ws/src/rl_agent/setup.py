@@ -20,7 +20,7 @@ setup(
         'minio==4.0.5',
         'numpy==1.17.4',
         'pandas==0.20.2',
-        'Pillow==9.0.0',
+        'Pillow==9.3.0',
         'pygame==1.9.3',
         'PyYAML==5.4',
         'redis==2.10.6',
