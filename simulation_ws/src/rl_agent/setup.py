@@ -23,7 +23,7 @@ setup(
         'Pillow==9.0.0',
         'pygame==1.9.3',
         'PyYAML==5.4',
-        'redis==2.10.6',
+        'redis==4.4.4',
         'rospkg==1.1.7',
         'scipy==0.19.0',
         'pytorch>=1.9',
